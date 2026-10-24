@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use crate::error::EmailFormError;
-use crate::settings::Settings;
+use crate::settings::RecaptchaSettings;
 
 #[derive(Debug, Deserialize)]
 struct VerifyResponse {
@@ -15,15 +15,12 @@ struct VerifyResponse {
 
 pub async fn verify(
     client: &reqwest::Client,
-    settings: &Settings,
+    settings: &RecaptchaSettings,
     token: &str,
 ) -> Result<(), EmailFormError> {
     let response: VerifyResponse = client
-        .post(&settings.recaptcha_verify_url)
-        .form(&[
-            ("secret", settings.recaptcha_secret.as_str()),
-            ("response", token),
-        ])
+        .post(&settings.verify_url)
+        .form(&[("secret", settings.secret.as_str()), ("response", token)])
         .send()
         .await?
         .error_for_status()?
@@ -34,7 +31,7 @@ pub async fn verify(
         return Err(EmailFormError::Recaptcha(response.error_codes.join(", ")));
     }
 
-    if let Some(min_score) = settings.recaptcha_min_score {
+    if let Some(min_score) = settings.min_score {
         let score = response.score.unwrap_or(0.0);
 
         if score < min_score {
@@ -42,13 +39,13 @@ pub async fn verify(
         }
     }
 
-    if let Some(expected) = &settings.recaptcha_expected_action
+    if let Some(expected) = &settings.expected_action
         && response.action.as_ref() != Some(expected)
     {
         return Err(EmailFormError::Recaptcha("unexpected action".to_string()));
     }
 
-    if let Some(expected) = &settings.recaptcha_expected_hostname
+    if let Some(expected) = &settings.expected_hostname
         && response.hostname.as_ref() != Some(expected)
     {
         return Err(EmailFormError::Recaptcha("unexpected hostname".to_string()));
@@ -111,16 +108,11 @@ mod tests {
     use super::test_support::*;
     use super::*;
 
-    fn settings(url: String, min_score: Option<f32>) -> Settings {
-        Settings {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            max_message_length: 4096,
-            recaptcha_secret: SECRET.to_string(),
-            recaptcha_verify_url: url,
-            recaptcha_min_score: min_score,
-            recaptcha_expected_action: None,
-            recaptcha_expected_hostname: None,
+    fn settings(url: String, min_score: Option<f32>) -> RecaptchaSettings {
+        RecaptchaSettings {
+            verify_url: url,
+            min_score,
+            ..RecaptchaSettings::test_default()
         }
     }
 
@@ -216,8 +208,8 @@ mod tests {
             "hostname": "example.com",
         }));
         let mut settings = settings(url, None);
-        settings.recaptcha_expected_action = Some("contact".to_string());
-        settings.recaptcha_expected_hostname = Some("example.com".to_string());
+        settings.expected_action = Some("contact".to_string());
+        settings.expected_hostname = Some("example.com".to_string());
 
         let result = verify(&reqwest::Client::new(), &settings, VALID_TOKEN).await;
 
@@ -228,7 +220,7 @@ mod tests {
     async fn rejects_mismatched_action() {
         let url = spawn_mock(json!({ "success": true, "action": "login" }));
         let mut settings = settings(url, None);
-        settings.recaptcha_expected_action = Some("contact".to_string());
+        settings.expected_action = Some("contact".to_string());
 
         let result = verify(&reqwest::Client::new(), &settings, VALID_TOKEN).await;
 
@@ -242,7 +234,7 @@ mod tests {
     async fn rejects_missing_action_when_expected() {
         let url = spawn_mock(json!({ "success": true }));
         let mut settings = settings(url, None);
-        settings.recaptcha_expected_action = Some("contact".to_string());
+        settings.expected_action = Some("contact".to_string());
 
         let result = verify(&reqwest::Client::new(), &settings, VALID_TOKEN).await;
 
@@ -253,7 +245,7 @@ mod tests {
     async fn rejects_mismatched_hostname() {
         let url = spawn_mock(json!({ "success": true, "hostname": "evil.com" }));
         let mut settings = settings(url, None);
-        settings.recaptcha_expected_hostname = Some("example.com".to_string());
+        settings.expected_hostname = Some("example.com".to_string());
 
         let result = verify(&reqwest::Client::new(), &settings, VALID_TOKEN).await;
 
@@ -267,7 +259,7 @@ mod tests {
     async fn rejects_missing_hostname_when_expected() {
         let url = spawn_mock(json!({ "success": true }));
         let mut settings = settings(url, None);
-        settings.recaptcha_expected_hostname = Some("example.com".to_string());
+        settings.expected_hostname = Some("example.com".to_string());
 
         let result = verify(&reqwest::Client::new(), &settings, VALID_TOKEN).await;
 

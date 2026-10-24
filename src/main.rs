@@ -2,22 +2,29 @@ use actix_web::{App, HttpServer, web};
 
 mod error;
 mod handlers;
+mod mailer;
 mod recaptcha;
 mod settings;
 
 use error::EmailFormError;
+use mailer::Mailer;
 use settings::Settings;
 
 #[actix_web::main]
 async fn main() -> Result<(), EmailFormError> {
     let settings = Settings::load()?;
+    let form_settings = web::Data::new(settings.form.clone());
+    let recaptcha_settings = web::Data::new(settings.recaptcha.clone());
+    let mailer = web::Data::new(Mailer::new(&settings.smtp)?);
     let client = web::Data::new(reqwest::Client::new());
-    let bind_address = (settings.host.clone(), settings.port);
+    let bind_address = (settings.server.host.clone(), settings.server.port);
 
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(settings.clone()))
+            .app_data(form_settings.clone())
+            .app_data(recaptcha_settings.clone())
             .app_data(client.clone())
+            .app_data(mailer.clone())
             .service(handlers::submit)
     })
     .bind(bind_address)?

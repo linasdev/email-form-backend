@@ -9,6 +9,8 @@ pub enum EmailFormError {
     Validation(String),
     Recaptcha(String),
     Http(reqwest::Error),
+    Message(lettre::error::Error),
+    Smtp(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl fmt::Display for EmailFormError {
@@ -19,6 +21,8 @@ impl fmt::Display for EmailFormError {
             Self::Validation(message) => write!(f, "{message}"),
             Self::Recaptcha(message) => write!(f, "recaptcha verification failed: {message}"),
             Self::Http(err) => write!(f, "http error: {err}"),
+            Self::Message(err) => write!(f, "message error: {err}"),
+            Self::Smtp(err) => write!(f, "smtp error: {err}"),
         }
     }
 }
@@ -30,6 +34,8 @@ impl std::error::Error for EmailFormError {
             Self::Io(err) => Some(err),
             Self::Validation(_) | Self::Recaptcha(_) => None,
             Self::Http(err) => Some(err),
+            Self::Message(err) => Some(err),
+            Self::Smtp(err) => Some(err.as_ref()),
         }
     }
 }
@@ -37,9 +43,9 @@ impl std::error::Error for EmailFormError {
 impl ResponseError for EmailFormError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::Config(_) | Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Config(_) | Self::Io(_) | Self::Message(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Validation(_) | Self::Recaptcha(_) => StatusCode::BAD_REQUEST,
-            Self::Http(_) => StatusCode::BAD_GATEWAY,
+            Self::Http(_) | Self::Smtp(_) => StatusCode::BAD_GATEWAY,
         }
     }
 }
@@ -53,6 +59,12 @@ impl From<config::ConfigError> for EmailFormError {
 impl From<std::io::Error> for EmailFormError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<lettre::error::Error> for EmailFormError {
+    fn from(err: lettre::error::Error) -> Self {
+        Self::Message(err)
     }
 }
 
@@ -148,5 +160,20 @@ mod tests {
         let error = EmailFormError::from(source);
 
         assert_that!(error.status_code(), eq(StatusCode::BAD_GATEWAY));
+    }
+
+    #[actix_web::test]
+    async fn smtp_error_is_bad_gateway() {
+        let error = EmailFormError::Smtp(Box::new(std::io::Error::other("down")));
+
+        assert_that!(error.status_code(), eq(StatusCode::BAD_GATEWAY));
+        assert_that!(error.to_string(), eq("smtp error: down"));
+    }
+
+    #[actix_web::test]
+    async fn message_error_is_internal_server_error() {
+        let error = EmailFormError::from(lettre::error::Error::MissingFrom);
+
+        assert_that!(error.status_code(), eq(StatusCode::INTERNAL_SERVER_ERROR));
     }
 }

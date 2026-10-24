@@ -3,8 +3,9 @@ use serde::Deserialize;
 use validator::Validate;
 
 use crate::error::EmailFormError;
+use crate::mailer::Mailer;
 use crate::recaptcha;
-use crate::settings::Settings;
+use crate::settings::{FormSettings, RecaptchaSettings};
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct FormSubmission {
@@ -20,20 +21,23 @@ pub struct FormSubmission {
 
 #[post("/submit")]
 pub async fn submit(
-    settings: web::Data<Settings>,
+    form_settings: web::Data<FormSettings>,
+    recaptcha_settings: web::Data<RecaptchaSettings>,
     client: web::Data<reqwest::Client>,
+    mailer: web::Data<Mailer>,
     form: web::Json<FormSubmission>,
 ) -> Result<HttpResponse, EmailFormError> {
     form.validate()?;
 
-    if form.message.chars().count() > settings.max_message_length {
+    if form.message.chars().count() > form_settings.max_message_length {
         return Err(EmailFormError::Validation(format!(
             "message must be at most {} characters",
-            settings.max_message_length
+            form_settings.max_message_length
         )));
     }
 
-    recaptcha::verify(&client, &settings, &form.recaptcha_token).await?;
+    recaptcha::verify(&client, &recaptcha_settings, &form.recaptcha_token).await?;
+    mailer.send(&form).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -42,21 +46,21 @@ pub async fn submit(
 mod tests {
     use actix_web::{App, http::StatusCode, test};
     use googletest::prelude::*;
+    use lettre::transport::stub::AsyncStubTransport;
     use serde_json::{Value, json};
 
     use super::*;
     use crate::recaptcha::test_support::*;
+    use crate::settings::Settings;
 
     fn settings(max_message_length: usize, recaptcha_verify_url: String) -> Settings {
         Settings {
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            max_message_length,
-            recaptcha_secret: SECRET.to_string(),
-            recaptcha_verify_url,
-            recaptcha_min_score: None,
-            recaptcha_expected_action: None,
-            recaptcha_expected_hostname: None,
+            form: FormSettings { max_message_length },
+            recaptcha: RecaptchaSettings {
+                verify_url: recaptcha_verify_url,
+                ..RecaptchaSettings::test_default()
+            },
+            ..Settings::test_default()
         }
     }
 
@@ -72,14 +76,26 @@ mod tests {
     async fn post(max_message_length: usize, payload: Value) -> (StatusCode, String) {
         let url = spawn_mock(json!({ "success": true }));
 
-        post_to(settings(max_message_length, url), payload).await
+        post_to(
+            settings(max_message_length, url),
+            AsyncStubTransport::new_ok(),
+            payload,
+        )
+        .await
     }
 
-    async fn post_to(settings: Settings, payload: Value) -> (StatusCode, String) {
+    async fn post_to(
+        settings: Settings,
+        stub: AsyncStubTransport,
+        payload: Value,
+    ) -> (StatusCode, String) {
+        let mailer = Mailer::with_stub(&settings.smtp, stub).unwrap();
         let app = test::init_service(
             App::new()
-                .app_data(web::Data::new(settings))
+                .app_data(web::Data::new(settings.form))
+                .app_data(web::Data::new(settings.recaptcha))
                 .app_data(web::Data::new(reqwest::Client::new()))
+                .app_data(web::Data::new(mailer))
                 .service(submit),
         )
         .await;
@@ -228,7 +244,80 @@ mod tests {
     async fn returns_bad_gateway_when_recaptcha_is_unreachable() {
         let settings = settings(5000, "http://127.0.0.1:1/siteverify".to_string());
 
-        let (status, _) = post_to(settings, valid_payload()).await;
+        let (status, _) = post_to(settings, AsyncStubTransport::new_ok(), valid_payload()).await;
+
+        assert_that!(status, eq(StatusCode::BAD_GATEWAY));
+    }
+
+    #[actix_web::test]
+    async fn sends_email_for_valid_submission() {
+        let url = spawn_mock(json!({ "success": true }));
+        let stub = AsyncStubTransport::new_ok();
+
+        let (status, _) = post_to(settings(5000, url), stub.clone(), valid_payload()).await;
+        let messages = stub.messages().await;
+
+        assert_that!(status, eq(StatusCode::OK));
+        assert_that!(messages, len(eq(1)));
+
+        let (envelope, raw) = &messages[0];
+
+        assert_that!(
+            envelope.from().map(ToString::to_string),
+            some(eq("form@example.com"))
+        );
+        assert_that!(
+            envelope
+                .to()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            elements_are![eq("owner@example.com")]
+        );
+        assert_that!(raw, contains_substring("Subject: New message from Linas"));
+        assert_that!(
+            raw,
+            contains_substring("Reply-To: Linas <linas@example.com>")
+        );
+        assert_that!(
+            raw,
+            contains_substring("Name: Linas\r\nEmail: linas@example.com")
+        );
+        assert_that!(raw, contains_substring("Hello!"));
+    }
+
+    #[actix_web::test]
+    async fn does_not_send_email_for_invalid_submission() {
+        let url = spawn_mock(json!({ "success": true }));
+        let stub = AsyncStubTransport::new_ok();
+        let mut payload = valid_payload();
+        payload["email"] = json!("nope");
+
+        let (status, _) = post_to(settings(5000, url), stub.clone(), payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(stub.messages().await, is_empty());
+    }
+
+    #[actix_web::test]
+    async fn does_not_send_email_when_recaptcha_fails() {
+        let url = spawn_mock(json!({ "success": true }));
+        let stub = AsyncStubTransport::new_ok();
+        let mut payload = valid_payload();
+        payload["recaptcha_token"] = json!(INVALID_TOKEN);
+
+        let (status, _) = post_to(settings(5000, url), stub.clone(), payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(stub.messages().await, is_empty());
+    }
+
+    #[actix_web::test]
+    async fn returns_bad_gateway_when_smtp_fails() {
+        let url = spawn_mock(json!({ "success": true }));
+        let stub = AsyncStubTransport::new_error();
+
+        let (status, _) = post_to(settings(5000, url), stub, valid_payload()).await;
 
         assert_that!(status, eq(StatusCode::BAD_GATEWAY));
     }
