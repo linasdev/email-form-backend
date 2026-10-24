@@ -10,6 +10,7 @@ pub struct Settings {
     pub recaptcha: Option<RecaptchaSettings>,
     pub smtp: SmtpSettings,
     pub cors: Option<CorsSettings>,
+    pub rate_limit: Option<RateLimitSettings>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +22,34 @@ pub struct ServerSettings {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CorsSettings {
     pub allowed_origins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitSettings {
+    #[serde(default = "default_burst_size")]
+    pub burst_size: u32,
+    #[serde(default = "default_replenish_seconds")]
+    pub replenish_seconds: u64,
+    #[serde(default)]
+    pub trust_proxy_headers: bool,
+}
+
+impl Default for RateLimitSettings {
+    fn default() -> Self {
+        Self {
+            burst_size: default_burst_size(),
+            replenish_seconds: default_replenish_seconds(),
+            trust_proxy_headers: false,
+        }
+    }
+}
+
+fn default_burst_size() -> u32 {
+    5
+}
+
+fn default_replenish_seconds() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,6 +162,7 @@ impl Settings {
             recaptcha: Some(RecaptchaSettings::test_default()),
             smtp: SmtpSettings::test_default(),
             cors: None,
+            rate_limit: None,
         }
     }
 }
@@ -290,5 +320,35 @@ mod tests {
             settings.cors.unwrap().allowed_origins,
             elements_are![eq("https://a.com"), eq("https://b.com")]
         );
+    }
+
+    #[actix_web::test]
+    async fn rate_limit_is_disabled_without_its_section() {
+        let settings = parse(&minimal_toml("")).unwrap();
+
+        assert_that!(settings.rate_limit, none());
+    }
+
+    #[actix_web::test]
+    async fn rate_limit_section_has_defaults() {
+        let settings = parse(&minimal_toml("[rate_limit]")).unwrap();
+        let rate_limit = settings.rate_limit.unwrap();
+
+        assert_that!(rate_limit.burst_size, eq(5));
+        assert_that!(rate_limit.replenish_seconds, eq(60));
+        assert_that!(rate_limit.trust_proxy_headers, eq(false));
+    }
+
+    #[actix_web::test]
+    async fn rate_limit_section_overrides_defaults() {
+        let toml = minimal_toml(
+            "[rate_limit]\nburst_size = 2\nreplenish_seconds = 10\ntrust_proxy_headers = true",
+        );
+
+        let rate_limit = parse(&toml).unwrap().rate_limit.unwrap();
+
+        assert_that!(rate_limit.burst_size, eq(2));
+        assert_that!(rate_limit.replenish_seconds, eq(10));
+        assert_that!(rate_limit.trust_proxy_headers, eq(true));
     }
 }

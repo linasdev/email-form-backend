@@ -5,12 +5,14 @@ mod cors;
 mod error;
 mod handlers;
 mod mailer;
+mod rate_limit;
 mod recaptcha;
 mod settings;
 
 use cors::AllowedOrigins;
 use error::EmailFormError;
 use mailer::Mailer;
+use rate_limit::RateLimit;
 use settings::Settings;
 
 #[actix_web::main]
@@ -31,6 +33,7 @@ async fn main() -> Result<(), EmailFormError> {
         .as_ref()
         .map(AllowedOrigins::parse)
         .transpose()?;
+    let rate_limit = RateLimit::parse(settings.rate_limit.as_ref())?;
     let client = web::Data::new(reqwest::Client::new());
     let bind_address = (settings.server.host.clone(), settings.server.port);
 
@@ -38,6 +41,7 @@ async fn main() -> Result<(), EmailFormError> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(rate_limit.middleware())
             .wrap(cors::middleware(allowed_origins.as_ref()))
             .wrap(Logger::default())
             .app_data(form_settings.clone())

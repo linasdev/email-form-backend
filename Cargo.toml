@@ -10,6 +10,10 @@ edition = "2024"
 [dependencies]
 actix-cors = "0.7.2"
 
+[dependencies.actix-governor]
+version = "0.10.0"
+features = ["logger"]
+
 [dependencies.actix-web]
 version = "4.18.1"
 
