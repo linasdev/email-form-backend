@@ -1,12 +1,14 @@
 use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer, web};
 
+mod cors;
 mod error;
 mod handlers;
 mod mailer;
 mod recaptcha;
 mod settings;
 
+use cors::AllowedOrigins;
 use error::EmailFormError;
 use mailer::Mailer;
 use settings::Settings;
@@ -24,6 +26,11 @@ async fn main() -> Result<(), EmailFormError> {
     }
 
     let mailer = web::Data::new(Mailer::new(&settings.smtp)?);
+    let allowed_origins = settings
+        .cors
+        .as_ref()
+        .map(AllowedOrigins::parse)
+        .transpose()?;
     let client = web::Data::new(reqwest::Client::new());
     let bind_address = (settings.server.host.clone(), settings.server.port);
 
@@ -31,6 +38,7 @@ async fn main() -> Result<(), EmailFormError> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(cors::middleware(allowed_origins.as_ref()))
             .wrap(Logger::default())
             .app_data(form_settings.clone())
             .configure(|cfg| {

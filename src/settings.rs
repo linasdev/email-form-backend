@@ -9,12 +9,18 @@ pub struct Settings {
     pub form: FormSettings,
     pub recaptcha: Option<RecaptchaSettings>,
     pub smtp: SmtpSettings,
+    pub cors: Option<CorsSettings>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerSettings {
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CorsSettings {
+    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,7 +72,10 @@ impl Settings {
             .add_source(
                 Environment::with_prefix("EMAIL_FORM")
                     .prefix_separator("_")
-                    .separator("__"),
+                    .separator("__")
+                    .list_separator(",")
+                    .with_list_parse_key("cors.allowed_origins")
+                    .try_parsing(true),
             )
             .build()?
             .try_deserialize()?;
@@ -123,6 +132,7 @@ impl Settings {
             form: FormSettings::test_default(),
             recaptcha: Some(RecaptchaSettings::test_default()),
             smtp: SmtpSettings::test_default(),
+            cors: None,
         }
     }
 }
@@ -253,6 +263,32 @@ mod tests {
         assert_that!(
             settings.recaptcha.unwrap().verify_url,
             eq("https://www.google.com/recaptcha/api/siteverify")
+        );
+    }
+
+    #[actix_web::test]
+    async fn cors_is_disabled_without_its_section() {
+        let settings = parse(&minimal_toml("")).unwrap();
+
+        assert_that!(settings.cors, none());
+    }
+
+    #[actix_web::test]
+    async fn cors_section_requires_allowed_origins() {
+        let result = parse(&minimal_toml("[cors]"));
+
+        assert_that!(result, err(anything()));
+    }
+
+    #[actix_web::test]
+    async fn cors_section_lists_allowed_origins() {
+        let toml = minimal_toml("[cors]\nallowed_origins = [\"https://a.com\", \"https://b.com\"]");
+
+        let settings = parse(&toml).unwrap();
+
+        assert_that!(
+            settings.cors.unwrap().allowed_origins,
+            elements_are![eq("https://a.com"), eq("https://b.com")]
         );
     }
 }
