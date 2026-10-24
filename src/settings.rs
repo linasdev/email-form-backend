@@ -7,6 +7,7 @@ use crate::error::EmailFormError;
 pub struct Settings {
     pub host: String,
     pub port: u16,
+    pub max_message_length: usize,
 }
 
 impl Settings {
@@ -14,6 +15,7 @@ impl Settings {
         let settings = Config::builder()
             .set_default("host", "127.0.0.1")?
             .set_default("port", 8080)?
+            .set_default("max_message_length", 4096)?
             .add_source(File::with_name("config").required(false))
             .add_source(Environment::with_prefix("EMAIL_FORM"))
             .build()?

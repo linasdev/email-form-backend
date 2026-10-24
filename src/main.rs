@@ -1,6 +1,7 @@
 use actix_web::{App, HttpServer, web};
 
 mod error;
+mod handlers;
 mod settings;
 
 use error::EmailFormError;
@@ -11,10 +12,14 @@ async fn main() -> Result<(), EmailFormError> {
     let settings = Settings::load()?;
     let bind_address = (settings.host.clone(), settings.port);
 
-    HttpServer::new(move || App::new().app_data(web::Data::new(settings.clone())))
-        .bind(bind_address)?
-        .run()
-        .await?;
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(settings.clone()))
+            .service(handlers::submit)
+    })
+    .bind(bind_address)?
+    .run()
+    .await?;
 
     Ok(())
 }
