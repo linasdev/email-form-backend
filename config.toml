@@ -1,0 +1,68 @@
+# Default configuration, read from `config.toml` in the working directory.
+#
+# Every value can be overridden with an environment variable named
+# EMAIL_FORM_<SECTION>__<KEY> (note the double underscore), for example:
+#   EMAIL_FORM_SERVER__PORT=9000
+#   EMAIL_FORM_SMTP__PASSWORD=secret
+# Environment variables take precedence over this file, so keep secrets
+# (SMTP password, reCAPTCHA secret) in the environment rather than here.
+#
+# Log verbosity is controlled separately with RUST_LOG (default: info).
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[form]
+# Maximum length of the message field, in characters.
+max_message_length = 4096
+
+[smtp]
+# Required. Replace these placeholders with your mail server details.
+host = "smtp.example.com"
+# "starttls" (default, port 587), "tls" (implicit TLS, port 465) or
+# "none" (no encryption, port 25; only for local development servers).
+security = "starttls"
+# Optional. Defaults to the standard port of the chosen security mode.
+# port = 587
+# Optional. Set both or neither. Prefer EMAIL_FORM_SMTP__USERNAME and
+# EMAIL_FORM_SMTP__PASSWORD over writing credentials here.
+# username = "user"
+# password = "password"
+# Sender address of the notification email.
+from = "Contact Form <form@example.com>"
+# Recipient of the notification email.
+to = "owner@example.com"
+
+# reCAPTCHA verification is disabled unless this section exists. When enabled,
+# every submission must include a valid `recaptcha_token`.
+# [recaptcha]
+# Required once the section exists. Prefer EMAIL_FORM_RECAPTCHA__SECRET.
+# secret = "your-secret-key"
+# verify_url = "https://www.google.com/recaptcha/api/siteverify"
+# reCAPTCHA v3 only: reject tokens with a lower score (0.0 to 1.0).
+# min_score = 0.5
+# reCAPTCHA v3 only: require the token to have been issued for this action.
+# expected_action = "contact"
+# Require the token to have been issued for this site.
+# expected_hostname = "example.com"
+
+# CORS is disabled unless this section exists. Leave it out when the frontend
+# is served from the same origin as this backend.
+# [cors]
+# Required once the section exists. Each entry is a scheme and host (with an
+# optional port) and no trailing slash, or "*" to allow any origin. As an
+# environment variable, separate entries with commas.
+# allowed_origins = ["https://example.com"]
+
+# Rate limiting is disabled unless this section exists. Only POST requests are
+# counted, per client IP address.
+# [rate_limit]
+# How many requests a client can send at once.
+# burst_size = 5
+# Seconds until one more request is allowed after the burst is used up.
+# replenish_seconds = 60
+# Identify clients by the X-Forwarded-For / Forwarded headers instead of the
+# connection address. Enable only behind a reverse proxy you control, since
+# clients can otherwise spoof the header to avoid the limit.
+# trust_proxy_headers = false

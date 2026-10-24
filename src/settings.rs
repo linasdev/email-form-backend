@@ -351,4 +351,38 @@ mod tests {
         assert_that!(rate_limit.replenish_seconds, eq(10));
         assert_that!(rate_limit.trust_proxy_headers, eq(true));
     }
+
+    #[actix_web::test]
+    async fn shipped_config_file_is_valid() {
+        let settings = parse(include_str!("../config.toml")).unwrap();
+
+        assert_that!(settings.server.port, eq(8080));
+        assert_that!(settings.smtp.security, eq(SmtpSecurity::Starttls));
+        assert_that!(settings.recaptcha, none());
+        assert_that!(settings.cors, none());
+        assert_that!(settings.rate_limit, none());
+    }
+
+    #[actix_web::test]
+    async fn shipped_config_file_is_valid_with_every_section_enabled() {
+        let uncommented: String = include_str!("../config.toml")
+            .lines()
+            .map(|line| {
+                let optional = line
+                    .strip_prefix("# ")
+                    .filter(|rest| rest.starts_with('[') || rest.split_once(" = ").is_some());
+
+                optional.unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let settings = parse(&uncommented).unwrap();
+
+        assert_that!(settings.smtp.port, some(eq(587)));
+        assert_that!(settings.smtp.username, some(eq("user")));
+        assert_that!(settings.recaptcha.unwrap().min_score, some(eq(0.5)));
+        assert_that!(settings.cors.unwrap().allowed_origins, len(eq(1)));
+        assert_that!(settings.rate_limit.unwrap().burst_size, eq(5));
+    }
 }
