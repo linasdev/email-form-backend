@@ -98,7 +98,7 @@ The email is plain text and goes from `smtp.from` to `smtp.to`:
 - **Reply-To:** the submitter, as `Name <email>`, so replying goes straight to them. It is left out when only a phone number was given.
 - **Body:** a `Name:` line, then `Email:` and `Phone:` lines for whichever were given, a blank line, then the message.
 
-Control characters (including newlines) are stripped from the name before it is used in the subject or `Reply-To`, and from the phone number, which prevents header injection.
+Control characters (including newlines) are stripped from the name, email address and phone number before they are used in the subject, `Reply-To` or body, which prevents header injection.
 
 ### Frontend example
 

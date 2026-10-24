@@ -99,7 +99,7 @@ impl Mailer {
             .subject(format!("New message from {name}"))
             .header(ContentType::TEXT_PLAIN);
 
-        if let Some(email) = &submission.email {
+        if let Some(email) = submission.email.as_deref().map(sanitize) {
             let address: Address = email
                 .parse()
                 .map_err(|_| EmailFormError::Validation("email is invalid".to_string()))?;
@@ -232,6 +232,33 @@ mod tests {
                 "Name: Linas\r\nEmail: linas@example.com\r\nPhone: +370 600 00000\r\n\r\nHello!"
             )
         );
+    }
+
+    #[actix_web::test]
+    async fn strips_control_characters_from_email() {
+        let raw = sent(submission("Linas", "li\r\nnas@example.com")).await;
+
+        assert_that!(
+            raw,
+            contains_substring("Reply-To: Linas <linas@example.com>")
+        );
+        assert_that!(raw, contains_substring("Email: linas@example.com\r\n"));
+    }
+
+    #[actix_web::test]
+    async fn does_not_send_email_with_injected_headers() {
+        let stub = AsyncStubTransport::new_ok();
+        let mailer = Mailer::with_stub(&SmtpSettings::test_default(), stub.clone()).unwrap();
+
+        let result = mailer
+            .send(&submission(
+                "Linas",
+                "linas@example.com\r\nBcc: spam@example.com",
+            ))
+            .await;
+
+        assert_that!(result, err(anything()));
+        assert_that!(stub.messages().await, is_empty());
     }
 
     #[actix_web::test]
