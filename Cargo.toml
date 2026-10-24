@@ -1,0 +1,30 @@
+[package]
+name = "email-form-backend"
+description = "Email form backend"
+authors = ["Linas Nikiperavičius <linas@linasdev.com>"]
+repository = "https://github.com/linasdev/email-form-backend"
+license = "MIT"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies.actix-web]
+version = "4.18.1"
+
+[dependencies.config]
+version = "0.15.27"
+
+[dependencies.lettre]
+version = "0.11.23"
+default-features = false
+features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls", "aws-lc-rs", "webpki-roots"]
+
+[dependencies.reqwest]
+version = "0.13.5"
+
+[dependencies.serde]
+version = "1.0.229"
+features = ["derive"]
+
+[dependencies.tokio]
+version = "1.54.1"
+features = ["macros", "rt-multi-thread"]
