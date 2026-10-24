@@ -58,9 +58,14 @@ The request body must be JSON with the `Content-Type: application/json` header.
 | Field             | Type   | Required                         | Rules                          |
 | ----------------- | ------ | -------------------------------- | ------------------------------ |
 | `name`            | string | yes                              | 1 to 100 characters            |
-| `email`           | string | yes                              | valid email address, at most 256 characters |
+| `email`           | string | one of `email` and `phone_number` | valid email address, at most 256 characters |
+| `phone_number`    | string | one of `email` and `phone_number` | see below                      |
 | `message`         | string | yes                              | 1 to `form.max_message_length` characters (default 4096) |
 | `recaptcha_token` | string | only when reCAPTCHA is enabled   | 1 to 4096 characters           |
+
+At least one of `email` and `phone_number` must be given, and both can be. Each one is optional on its own. Values are trimmed, and an empty or whitespace-only value counts as not provided, so a form can send `""` for an unfilled input.
+
+A phone number may contain digits, spaces, `-`, `.` and parentheses, with an optional `+` at the very start. It must have 7 to 15 digits (the E.164 maximum) and at most 32 characters in total. Examples: `+370 600 00000`, `(555) 123-4567`, `555.123.4567`. The number is not checked against country formats or dialed, only its shape.
 
 Lengths are counted in characters, not bytes. Unknown fields are ignored. When reCAPTCHA is disabled, `recaptcha_token` is accepted and ignored.
 
@@ -71,7 +76,8 @@ Error bodies are plain text.
 | Status | Meaning | Body |
 | ------ | ------- | ---- |
 | `200 OK` | The email was sent. | empty |
-| `400 Bad Request` | The content type is not `application/json`, the body is not valid JSON, a field is missing, or a field is invalid. | `Content type error`, the parse error, or `invalid fields: email, name` (field names, sorted) |
+| `400 Bad Request` | The content type is not `application/json`, the body is not valid JSON, a field is missing, or a field is invalid. | `Content type error`, the parse error, or `invalid fields: email, phone_number` (field names, sorted) |
+| `400 Bad Request` | Neither `email` nor `phone_number` was given. | `email or phone_number is required` |
 | `400 Bad Request` | The message is longer than the configured limit. | `message must be at most N characters` |
 | `400 Bad Request` | `recaptcha_token` is missing while reCAPTCHA is enabled. | `recaptcha_token is required` |
 | `400 Bad Request` | reCAPTCHA verification failed. | `recaptcha verification failed: <reason>` |
@@ -89,10 +95,10 @@ Checks run in this order: JSON parsing and field validation, the message length 
 The email is plain text and goes from `smtp.from` to `smtp.to`:
 
 - **Subject:** `New message from <name>`
-- **Reply-To:** the submitter, as `Name <email>`, so replying goes straight to them.
-- **Body:** `Name:` and `Email:` lines, a blank line, then the message.
+- **Reply-To:** the submitter, as `Name <email>`, so replying goes straight to them. It is left out when only a phone number was given.
+- **Body:** a `Name:` line, then `Email:` and `Phone:` lines for whichever were given, a blank line, then the message.
 
-Control characters (including newlines) are stripped from the name before it is used in the subject or `Reply-To`, which prevents header injection.
+Control characters (including newlines) are stripped from the name before it is used in the subject or `Reply-To`, and from the phone number, which prevents header injection.
 
 ### Frontend example
 
@@ -100,7 +106,7 @@ Control characters (including newlines) are stripped from the name before it is 
 const response = await fetch("https://forms.example.com/submit", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ name, email, message, recaptcha_token: token }),
+  body: JSON.stringify({ name, email, phone_number, message, recaptcha_token: token }),
 });
 
 if (!response.ok) {

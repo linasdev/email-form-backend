@@ -92,21 +92,27 @@ impl Mailer {
 
     pub async fn send(&self, submission: &FormSubmission) -> Result<(), EmailFormError> {
         let name = sanitize(&submission.name);
-        let address: Address = submission
-            .email
-            .parse()
-            .map_err(|_| EmailFormError::Validation("email is invalid".to_string()))?;
-
-        let message = Message::builder()
+        let mut body = format!("Name: {name}\n");
+        let mut builder = Message::builder()
             .from(self.from.clone())
             .to(self.to.clone())
-            .reply_to(Mailbox::new(Some(name.clone()), address))
             .subject(format!("New message from {name}"))
-            .header(ContentType::TEXT_PLAIN)
-            .body(format!(
-                "Name: {name}\nEmail: {}\n\n{}",
-                submission.email, submission.message
-            ))?;
+            .header(ContentType::TEXT_PLAIN);
+
+        if let Some(email) = &submission.email {
+            let address: Address = email
+                .parse()
+                .map_err(|_| EmailFormError::Validation("email is invalid".to_string()))?;
+
+            builder = builder.reply_to(Mailbox::new(Some(name.clone()), address));
+            body.push_str(&format!("Email: {email}\n"));
+        }
+
+        if let Some(phone_number) = &submission.phone_number {
+            body.push_str(&format!("Phone: {}\n", sanitize(phone_number)));
+        }
+
+        let message = builder.body(format!("{body}\n{}", submission.message))?;
 
         match &self.transport {
             Transport::Smtp(transport) => transport
@@ -132,8 +138,16 @@ mod tests {
 
     fn submission(name: &str, email: &str) -> FormSubmission {
         FormSubmission {
+            email: Some(email.to_string()),
+            ..contactless(name)
+        }
+    }
+
+    fn contactless(name: &str) -> FormSubmission {
+        FormSubmission {
             name: name.to_string(),
-            email: email.to_string(),
+            email: None,
+            phone_number: None,
             message: "Hello!".to_string(),
             recaptcha_token: None,
         }
@@ -158,6 +172,77 @@ mod tests {
             messages[0].1,
             contains_substring("Subject: New message from EvilBcc: spam@example.com")
         );
+    }
+
+    async fn sent(submission: FormSubmission) -> String {
+        let stub = AsyncStubTransport::new_ok();
+        let mailer = Mailer::with_stub(&SmtpSettings::test_default(), stub.clone()).unwrap();
+
+        mailer.send(&submission).await.unwrap();
+
+        stub.messages().await[0].1.clone()
+    }
+
+    #[actix_web::test]
+    async fn includes_only_email_when_phone_is_missing() {
+        let raw = sent(submission("Linas", "linas@example.com")).await;
+
+        assert_that!(
+            raw,
+            contains_substring("Reply-To: Linas <linas@example.com>")
+        );
+        assert_that!(
+            raw,
+            contains_substring("Name: Linas\r\nEmail: linas@example.com\r\n\r\nHello!")
+        );
+        assert_that!(raw, not(contains_substring("Phone:")));
+    }
+
+    #[actix_web::test]
+    async fn includes_only_phone_when_email_is_missing() {
+        let raw = sent(FormSubmission {
+            phone_number: Some("+370 600 00000".to_string()),
+            ..contactless("Linas")
+        })
+        .await;
+
+        assert_that!(
+            raw,
+            contains_substring("Name: Linas\r\nPhone: +370 600 00000\r\n\r\nHello!")
+        );
+        assert_that!(raw, not(contains_substring("Reply-To")));
+        assert_that!(raw, not(contains_substring("Email:")));
+    }
+
+    #[actix_web::test]
+    async fn includes_both_email_and_phone() {
+        let raw = sent(FormSubmission {
+            phone_number: Some("+370 600 00000".to_string()),
+            ..submission("Linas", "linas@example.com")
+        })
+        .await;
+
+        assert_that!(
+            raw,
+            contains_substring("Reply-To: Linas <linas@example.com>")
+        );
+        assert_that!(
+            raw,
+            contains_substring(
+                "Name: Linas\r\nEmail: linas@example.com\r\nPhone: +370 600 00000\r\n\r\nHello!"
+            )
+        );
+    }
+
+    #[actix_web::test]
+    async fn strips_control_characters_from_phone() {
+        let raw = sent(FormSubmission {
+            phone_number: Some("123\r\nBcc: spam@example.com".to_string()),
+            ..contactless("Linas")
+        })
+        .await;
+
+        assert_that!(raw, not(contains_substring("\r\nBcc:")));
     }
 
     #[actix_web::test]

@@ -1,6 +1,6 @@
 use actix_web::{HttpResponse, post, web};
 use serde::Deserialize;
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
 use crate::error::EmailFormError;
 use crate::mailer::Mailer;
@@ -12,11 +12,40 @@ pub struct FormSubmission {
     #[validate(length(min = 1, max = 100))]
     pub name: String,
     #[validate(email, length(max = 256))]
-    pub email: String,
+    pub email: Option<String>,
+    #[validate(length(max = 32), custom(function = "validate_phone"))]
+    pub phone_number: Option<String>,
     #[validate(length(min = 1))]
     pub message: String,
     #[validate(length(min = 1, max = 4096))]
     pub recaptcha_token: Option<String>,
+}
+
+fn validate_phone(value: &str) -> Result<(), ValidationError> {
+    let allowed = value
+        .char_indices()
+        .all(|(index, c)| c.is_ascii_digit() || " -.()".contains(c) || (index == 0 && c == '+'));
+    let digits = value.chars().filter(char::is_ascii_digit).count();
+
+    if allowed && (7..=15).contains(&digits) {
+        Ok(())
+    } else {
+        Err(ValidationError::new("phone"))
+    }
+}
+
+fn normalize(value: &mut Option<String>) {
+    *value = value
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+}
+
+impl FormSubmission {
+    fn normalize(&mut self) {
+        normalize(&mut self.email);
+        normalize(&mut self.phone_number);
+    }
 }
 
 #[post("/submit")]
@@ -27,6 +56,15 @@ pub async fn submit(
     mailer: web::Data<Mailer>,
     form: web::Json<FormSubmission>,
 ) -> Result<HttpResponse, EmailFormError> {
+    let mut form = form.into_inner();
+    form.normalize();
+
+    if form.email.is_none() && form.phone_number.is_none() {
+        return Err(EmailFormError::Validation(
+            "email or phone_number is required".to_string(),
+        ));
+    }
+
     form.validate()?;
 
     if form.message.chars().count() > form_settings.max_message_length {
@@ -134,12 +172,12 @@ mod tests {
     #[actix_web::test]
     async fn rejects_missing_field() {
         let mut payload = valid_payload();
-        payload.as_object_mut().unwrap().remove("email");
+        payload.as_object_mut().unwrap().remove("name");
 
         let (status, body) = post(5000, payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
-        assert_that!(body, contains_substring("missing field `email`"));
+        assert_that!(body, contains_substring("missing field `name`"));
     }
 
     #[actix_web::test]
@@ -389,5 +427,152 @@ mod tests {
         let (status, _) = post_to(settings, AsyncStubTransport::new_ok(), payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
+    }
+
+    fn without_email(mut payload: Value) -> Value {
+        payload.as_object_mut().unwrap().remove("email");
+        payload
+    }
+
+    #[actix_web::test]
+    async fn accepts_phone_number_without_email() {
+        let mut payload = without_email(valid_payload());
+        payload["phone_number"] = json!("+370 600 00000");
+
+        let (status, _) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn accepts_both_email_and_phone_number() {
+        let mut payload = valid_payload();
+        payload["phone_number"] = json!("+370 600 00000");
+
+        let (status, _) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn requires_email_or_phone_number() {
+        let (status, body) = post(5000, without_email(valid_payload())).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(body, eq("email or phone_number is required"));
+    }
+
+    #[actix_web::test]
+    async fn treats_blank_contact_fields_as_missing() {
+        for (email, phone) in [("", ""), ("   ", "  "), ("", " ")] {
+            let mut payload = valid_payload();
+            payload["email"] = json!(email);
+            payload["phone_number"] = json!(phone);
+
+            let (status, body) = post(5000, payload).await;
+
+            assert_that!(status, eq(StatusCode::BAD_REQUEST));
+            assert_that!(body, eq("email or phone_number is required"));
+        }
+    }
+
+    #[actix_web::test]
+    async fn accepts_blank_email_when_phone_number_is_given() {
+        let mut payload = valid_payload();
+        payload["email"] = json!("");
+        payload["phone_number"] = json!("+370 600 00000");
+
+        let (status, _) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn accepts_null_contact_fields() {
+        let mut payload = valid_payload();
+        payload["phone_number"] = json!(null);
+
+        let (status, _) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn trims_contact_fields() {
+        let mut payload = valid_payload();
+        payload["email"] = json!("  linas@example.com  ");
+
+        let (status, _) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn accepts_common_phone_number_formats() {
+        for phone in [
+            "+37060000000",
+            "+370 600 00000",
+            "(555) 123-4567",
+            "555.123.4567",
+            "0037060000000",
+            "1234567",
+            "+123456789012345",
+        ] {
+            let mut payload = without_email(valid_payload());
+            payload["phone_number"] = json!(phone);
+
+            let (status, body) = post(5000, payload).await;
+
+            assert_that!(status, eq(StatusCode::OK), "phone {phone:?}: {body}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn rejects_invalid_phone_numbers() {
+        for phone in [
+            "abc",
+            "123456",
+            "+1234567890123456",
+            "555-CALL-NOW",
+            "12+3456789",
+            "+370 600 00000 ext. 5x",
+            "123\n4567890",
+            &"1".repeat(33),
+        ] {
+            let mut payload = without_email(valid_payload());
+            payload["phone_number"] = json!(phone);
+
+            let (status, body) = post(5000, payload).await;
+
+            assert_that!(status, eq(StatusCode::BAD_REQUEST), "phone {phone:?}");
+            assert_that!(body, eq("invalid fields: phone_number"), "phone {phone:?}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn rejects_invalid_email_even_when_phone_number_is_valid() {
+        let mut payload = valid_payload();
+        payload["email"] = json!("nope");
+        payload["phone_number"] = json!("+370 600 00000");
+
+        let (status, body) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(body, eq("invalid fields: email"));
+    }
+
+    #[actix_web::test]
+    async fn sends_phone_number_in_the_email() {
+        let url = spawn_mock(json!({ "success": true }));
+        let stub = AsyncStubTransport::new_ok();
+        let mut payload = without_email(valid_payload());
+        payload["phone_number"] = json!("+370 600 00000");
+
+        let (status, _) = post_to(settings(5000, url), stub.clone(), payload).await;
+        let messages = stub.messages().await;
+
+        assert_that!(status, eq(StatusCode::OK));
+        assert_that!(messages[0].1, contains_substring("Phone: +370 600 00000"));
+        assert_that!(messages[0].1, not(contains_substring("Reply-To")));
     }
 }
