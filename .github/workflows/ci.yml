@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+  deploy:
+    name: Check deployment files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint the install script
+        run: shellcheck deploy/install.sh
+
+      - name: Build the release binary
+        run: cargo build --release --locked
+
+      - name: Stage an installation
+        run: DESTDIR="$RUNNER_TEMP/stage" deploy/install.sh
+
+      - name: Verify the systemd unit
+        run: |
+          stage="$RUNNER_TEMP/stage"
+          mkdir "$RUNNER_TEMP/unit"
+          sed "s|^ExecStart=.*|ExecStart=$stage/usr/local/bin/email-form-backend|" \
+            "$stage/etc/systemd/system/email-form-backend.service" \
+            > "$RUNNER_TEMP/unit/email-form-backend.service"
+          systemd-analyze verify "$RUNNER_TEMP/unit/email-form-backend.service"
