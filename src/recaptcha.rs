@@ -27,6 +27,14 @@ pub async fn verify(
         .json()
         .await?;
 
+    log::debug!(
+        "recaptcha response: success={}, score={:?}, action={:?}, hostname={:?}",
+        response.success,
+        response.score,
+        response.action,
+        response.hostname
+    );
+
     if !response.success {
         return Err(EmailFormError::Recaptcha(response.error_codes.join(", ")));
     }

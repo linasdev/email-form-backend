@@ -38,6 +38,7 @@ pub async fn submit(
 
     recaptcha::verify(&client, &recaptcha_settings, &form.recaptcha_token).await?;
     mailer.send(&form).await?;
+    log::info!("submission delivered");
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -317,8 +318,9 @@ mod tests {
         let url = spawn_mock(json!({ "success": true }));
         let stub = AsyncStubTransport::new_error();
 
-        let (status, _) = post_to(settings(5000, url), stub, valid_payload()).await;
+        let (status, body) = post_to(settings(5000, url), stub, valid_payload()).await;
 
         assert_that!(status, eq(StatusCode::BAD_GATEWAY));
+        assert_that!(body, eq("Bad Gateway"));
     }
 }

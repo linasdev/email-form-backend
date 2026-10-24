@@ -1,6 +1,7 @@
 use std::fmt;
 
-use actix_web::{ResponseError, http::StatusCode};
+use actix_web::http::header::ContentType;
+use actix_web::{HttpResponse, ResponseError, http::StatusCode};
 
 #[derive(Debug)]
 pub enum EmailFormError {
@@ -47,6 +48,28 @@ impl ResponseError for EmailFormError {
             Self::Validation(_) | Self::Recaptcha(_) => StatusCode::BAD_REQUEST,
             Self::Http(_) | Self::Smtp(_) => StatusCode::BAD_GATEWAY,
         }
+    }
+
+    fn error_response(&self) -> HttpResponse {
+        let status = self.status_code();
+        let message = match self {
+            Self::Validation(_) => {
+                log::debug!("rejected submission: {self}");
+                self.to_string()
+            }
+            Self::Recaptcha(_) => {
+                log::warn!("rejected submission: {self}");
+                self.to_string()
+            }
+            _ => {
+                log::error!("request failed: {self}");
+                status.canonical_reason().unwrap_or("Error").to_string()
+            }
+        };
+
+        HttpResponse::build(status)
+            .insert_header(ContentType::plaintext())
+            .body(message)
     }
 }
 
@@ -175,5 +198,36 @@ mod tests {
         let error = EmailFormError::from(lettre::error::Error::MissingFrom);
 
         assert_that!(error.status_code(), eq(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    async fn body_of(error: &EmailFormError) -> String {
+        let body = actix_web::body::to_bytes(error.error_response().into_body())
+            .await
+            .unwrap();
+
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[actix_web::test]
+    async fn client_errors_expose_their_message() {
+        let validation = EmailFormError::Validation("invalid fields: email".to_string());
+        let recaptcha = EmailFormError::Recaptcha("score too low".to_string());
+
+        assert_that!(body_of(&validation).await, eq("invalid fields: email"));
+        assert_that!(
+            body_of(&recaptcha).await,
+            eq("recaptcha verification failed: score too low")
+        );
+    }
+
+    #[actix_web::test]
+    async fn server_errors_hide_their_details() {
+        let config = EmailFormError::from(config::ConfigError::Message("secret path".to_string()));
+        let io = EmailFormError::from(std::io::Error::other("disk details"));
+        let smtp = EmailFormError::Smtp(Box::new(std::io::Error::other("smtp.internal:25")));
+
+        assert_that!(body_of(&config).await, eq("Internal Server Error"));
+        assert_that!(body_of(&io).await, eq("Internal Server Error"));
+        assert_that!(body_of(&smtp).await, eq("Bad Gateway"));
     }
 }

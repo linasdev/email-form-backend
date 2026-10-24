@@ -64,6 +64,13 @@ impl Mailer {
             }
         };
 
+        log::info!(
+            "smtp configured: host={}, security={:?}, auth={}",
+            settings.host,
+            settings.security,
+            settings.username.is_some()
+        );
+
         Ok(Self {
             transport: Transport::Smtp(builder.build()),
             from: parse_mailbox("smtp_from", &settings.from)?,

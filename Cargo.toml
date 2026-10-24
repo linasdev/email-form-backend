@@ -13,10 +13,16 @@ version = "4.18.1"
 [dependencies.config]
 version = "0.15.27"
 
+[dependencies.env_logger]
+version = "0.11.11"
+
 [dependencies.lettre]
 version = "0.11.23"
 default-features = false
 features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls", "aws-lc-rs", "webpki-roots"]
+
+[dependencies.log]
+version = "0.4.34"
 
 [dependencies.reqwest]
 version = "0.13.5"
@@ -25,10 +31,6 @@ features = ["json", "form"]
 [dependencies.serde]
 version = "1.0.229"
 features = ["derive"]
-
-[dependencies.tokio]
-version = "1.54.1"
-features = ["macros", "rt-multi-thread"]
 
 [dependencies.validator]
 version = "0.21.0"
