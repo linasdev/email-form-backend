@@ -3,6 +3,7 @@ use serde::Deserialize;
 use validator::Validate;
 
 use crate::error::EmailFormError;
+use crate::recaptcha;
 use crate::settings::Settings;
 
 #[derive(Debug, Deserialize, Validate)]
@@ -20,6 +21,7 @@ pub struct FormSubmission {
 #[post("/submit")]
 pub async fn submit(
     settings: web::Data<Settings>,
+    client: web::Data<reqwest::Client>,
     form: web::Json<FormSubmission>,
 ) -> Result<HttpResponse, EmailFormError> {
     form.validate()?;
@@ -31,6 +33,8 @@ pub async fn submit(
         )));
     }
 
+    recaptcha::verify(&client, &settings, &form.recaptcha_token).await?;
+
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -41,12 +45,18 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::recaptcha::test_support::*;
 
-    fn settings(max_message_length: usize) -> Settings {
+    fn settings(max_message_length: usize, recaptcha_verify_url: String) -> Settings {
         Settings {
             host: "127.0.0.1".to_string(),
             port: 8080,
             max_message_length,
+            recaptcha_secret: SECRET.to_string(),
+            recaptcha_verify_url,
+            recaptcha_min_score: None,
+            recaptcha_expected_action: None,
+            recaptcha_expected_hostname: None,
         }
     }
 
@@ -55,14 +65,21 @@ mod tests {
             "name": "Linas",
             "email": "linas@example.com",
             "message": "Hello!",
-            "recaptcha_token": "token",
+            "recaptcha_token": VALID_TOKEN,
         })
     }
 
-    async fn post(settings: Settings, payload: Value) -> (StatusCode, String) {
+    async fn post(max_message_length: usize, payload: Value) -> (StatusCode, String) {
+        let url = spawn_mock(json!({ "success": true }));
+
+        post_to(settings(max_message_length, url), payload).await
+    }
+
+    async fn post_to(settings: Settings, payload: Value) -> (StatusCode, String) {
         let app = test::init_service(
             App::new()
                 .app_data(web::Data::new(settings))
+                .app_data(web::Data::new(reqwest::Client::new()))
                 .service(submit),
         )
         .await;
@@ -80,7 +97,7 @@ mod tests {
 
     #[actix_web::test]
     async fn accepts_valid_submission() {
-        let (status, _) = post(settings(5000), valid_payload()).await;
+        let (status, _) = post(5000, valid_payload()).await;
 
         assert_that!(status, eq(StatusCode::OK));
     }
@@ -90,7 +107,7 @@ mod tests {
         let mut payload = valid_payload();
         payload.as_object_mut().unwrap().remove("email");
 
-        let (status, body) = post(settings(5000), payload).await;
+        let (status, body) = post(5000, payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
         assert_that!(body, contains_substring("missing field `email`"));
@@ -102,7 +119,7 @@ mod tests {
             let mut payload = valid_payload();
             payload[field] = json!("");
 
-            let (status, body) = post(settings(5000), payload).await;
+            let (status, body) = post(5000, payload).await;
 
             assert_that!(status, eq(StatusCode::BAD_REQUEST));
             assert_that!(body, eq(&format!("invalid fields: {field}")));
@@ -114,7 +131,7 @@ mod tests {
         let mut payload = valid_payload();
         payload["email"] = json!("not-an-email");
 
-        let (status, body) = post(settings(5000), payload).await;
+        let (status, body) = post(5000, payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
         assert_that!(body, eq("invalid fields: email"));
@@ -126,7 +143,7 @@ mod tests {
         payload["name"] = json!("");
         payload["email"] = json!("nope");
 
-        let (status, body) = post(settings(5000), payload).await;
+        let (status, body) = post(5000, payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
         assert_that!(body, eq("invalid fields: email, name"));
@@ -144,7 +161,7 @@ mod tests {
             let mut payload = valid_payload();
             payload[field] = json!(value);
 
-            let (status, body) = post(settings(5000), payload).await;
+            let (status, body) = post(5000, payload).await;
 
             assert_that!(status, eq(StatusCode::BAD_REQUEST));
             assert_that!(body, eq(&format!("invalid fields: {field}")));
@@ -157,7 +174,7 @@ mod tests {
         payload["name"] = json!("a".repeat(100));
         payload["recaptcha_token"] = json!("a".repeat(4096));
 
-        let (status, _) = post(settings(5000), payload).await;
+        let (status, _) = post(5000, payload).await;
 
         assert_that!(status, eq(StatusCode::OK));
     }
@@ -167,7 +184,7 @@ mod tests {
         let mut payload = valid_payload();
         payload["message"] = json!("a".repeat(10));
 
-        let (status, _) = post(settings(10), payload).await;
+        let (status, _) = post(10, payload).await;
 
         assert_that!(status, eq(StatusCode::OK));
     }
@@ -177,7 +194,7 @@ mod tests {
         let mut payload = valid_payload();
         payload["message"] = json!("a".repeat(11));
 
-        let (status, body) = post(settings(10), payload).await;
+        let (status, body) = post(10, payload).await;
 
         assert_that!(status, eq(StatusCode::BAD_REQUEST));
         assert_that!(body, eq("message must be at most 10 characters"));
@@ -188,8 +205,31 @@ mod tests {
         let mut payload = valid_payload();
         payload["message"] = json!("ą".repeat(10));
 
-        let (status, _) = post(settings(10), payload).await;
+        let (status, _) = post(10, payload).await;
 
         assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn rejects_token_failing_recaptcha_verification() {
+        let mut payload = valid_payload();
+        payload["recaptcha_token"] = json!(INVALID_TOKEN);
+
+        let (status, body) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(
+            body,
+            eq("recaptcha verification failed: invalid-input-response")
+        );
+    }
+
+    #[actix_web::test]
+    async fn returns_bad_gateway_when_recaptcha_is_unreachable() {
+        let settings = settings(5000, "http://127.0.0.1:1/siteverify".to_string());
+
+        let (status, _) = post_to(settings, valid_payload()).await;
+
+        assert_that!(status, eq(StatusCode::BAD_GATEWAY));
     }
 }

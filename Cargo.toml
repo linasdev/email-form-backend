@@ -20,6 +20,7 @@ features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-r
 
 [dependencies.reqwest]
 version = "0.13.5"
+features = ["json", "form"]
 
 [dependencies.serde]
 version = "1.0.229"

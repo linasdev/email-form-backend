@@ -7,6 +7,8 @@ pub enum EmailFormError {
     Config(config::ConfigError),
     Io(std::io::Error),
     Validation(String),
+    Recaptcha(String),
+    Http(reqwest::Error),
 }
 
 impl fmt::Display for EmailFormError {
@@ -15,6 +17,8 @@ impl fmt::Display for EmailFormError {
             Self::Config(err) => write!(f, "configuration error: {err}"),
             Self::Io(err) => write!(f, "io error: {err}"),
             Self::Validation(message) => write!(f, "{message}"),
+            Self::Recaptcha(message) => write!(f, "recaptcha verification failed: {message}"),
+            Self::Http(err) => write!(f, "http error: {err}"),
         }
     }
 }
@@ -24,7 +28,8 @@ impl std::error::Error for EmailFormError {
         match self {
             Self::Config(err) => Some(err),
             Self::Io(err) => Some(err),
-            Self::Validation(_) => None,
+            Self::Validation(_) | Self::Recaptcha(_) => None,
+            Self::Http(err) => Some(err),
         }
     }
 }
@@ -33,7 +38,8 @@ impl ResponseError for EmailFormError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::Config(_) | Self::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Validation(_) => StatusCode::BAD_REQUEST,
+            Self::Validation(_) | Self::Recaptcha(_) => StatusCode::BAD_REQUEST,
+            Self::Http(_) => StatusCode::BAD_GATEWAY,
         }
     }
 }
@@ -47,6 +53,12 @@ impl From<config::ConfigError> for EmailFormError {
 impl From<std::io::Error> for EmailFormError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+impl From<reqwest::Error> for EmailFormError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Http(err)
     }
 }
 
@@ -113,5 +125,28 @@ mod tests {
         let error = EmailFormError::from(sample.validate().unwrap_err());
 
         assert_that!(error.to_string(), eq("invalid fields: a, b"));
+    }
+
+    #[actix_web::test]
+    async fn recaptcha_error_is_bad_request() {
+        let error = EmailFormError::Recaptcha("score too low".to_string());
+
+        assert_that!(error.status_code(), eq(StatusCode::BAD_REQUEST));
+        assert_that!(
+            error.to_string(),
+            eq("recaptcha verification failed: score too low")
+        );
+    }
+
+    #[actix_web::test]
+    async fn http_error_is_bad_gateway() {
+        let source = reqwest::Client::new()
+            .get("http://127.0.0.1:1")
+            .send()
+            .await
+            .unwrap_err();
+        let error = EmailFormError::from(source);
+
+        assert_that!(error.status_code(), eq(StatusCode::BAD_GATEWAY));
     }
 }
