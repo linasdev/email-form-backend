@@ -247,6 +247,45 @@ By default, clients are identified by the address of the TCP connection. Behind 
 
 Enable it **only** behind a proxy that sets or overwrites those headers. Otherwise clients can send their own header and avoid the limit.
 
+## Installing as a systemd service
+
+The `deploy/` directory contains a hardened systemd unit and an install script. This needs a systemd-based Linux system and root access.
+
+```sh
+cargo build --release
+sudo deploy/install.sh
+```
+
+The script installs:
+
+| File | Purpose |
+| ---- | ------- |
+| `/usr/local/bin/email-form-backend` | the binary |
+| `/etc/email-form-backend/config.toml` | the configuration (a copy of the default `config.toml`, mode 0644) |
+| `/etc/email-form-backend/environment` | secrets and overrides as `KEY=value` lines (mode 0600, readable by root only) |
+| `/etc/systemd/system/email-form-backend.service` | the unit |
+
+The service is enabled but **not started**, because the default `[smtp]` settings are placeholders. Configure it, then start it:
+
+```sh
+sudoedit /etc/email-form-backend/config.toml      # set the [smtp] section
+sudoedit /etc/email-form-backend/environment      # EMAIL_FORM_SMTP__PASSWORD=...
+sudo systemctl start email-form-backend
+journalctl -u email-form-backend -f
+```
+
+Pass `--now` to start the service right away. Run the script again after rebuilding to upgrade: it replaces the binary and unit, restarts a running service, and **never overwrites** an existing `config.toml` or `environment` file.
+
+To remove the service, run `sudo deploy/install.sh --uninstall`. This keeps `/etc/email-form-backend`, and `--purge` removes it as well.
+
+Things to know:
+
+- The service reads `config.toml` from `/etc/email-form-backend`, its working directory. Edit the installed copy and not the one in the repository. Changes take effect after `systemctl restart email-form-backend`.
+- It runs as a transient unprivileged user (`DynamicUser=yes`) with a restrictive sandbox: read-only file system, no access to home directories, only IPv4 and IPv6 sockets, and a filtered set of system calls. Check the result with `systemd-analyze security email-form-backend`.
+- To listen on a port below 1024, uncomment the two `CAP_NET_BIND_SERVICE` lines in the unit. Alternatively, keep the default port and put a reverse proxy in front.
+- It restarts automatically on failure after 5 seconds. A configuration error makes it fail on every start, so look at `journalctl` if it keeps restarting.
+- Logs go to the journal. Change the level with `RUST_LOG` in the `environment` file.
+
 ## Logging
 
 Logging uses `env_logger`. The default level is `info`, and `RUST_LOG` changes it:
