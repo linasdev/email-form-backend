@@ -17,7 +17,12 @@ async fn main() -> Result<(), EmailFormError> {
 
     let settings = Settings::load()?;
     let form_settings = web::Data::new(settings.form.clone());
-    let recaptcha_settings = web::Data::new(settings.recaptcha.clone());
+    let recaptcha_settings = settings.recaptcha.clone().map(web::Data::new);
+
+    if recaptcha_settings.is_none() {
+        log::warn!("recaptcha is not configured; submissions will not be verified");
+    }
+
     let mailer = web::Data::new(Mailer::new(&settings.smtp)?);
     let client = web::Data::new(reqwest::Client::new());
     let bind_address = (settings.server.host.clone(), settings.server.port);
@@ -28,7 +33,11 @@ async fn main() -> Result<(), EmailFormError> {
         App::new()
             .wrap(Logger::default())
             .app_data(form_settings.clone())
-            .app_data(recaptcha_settings.clone())
+            .configure(|cfg| {
+                if let Some(recaptcha_settings) = &recaptcha_settings {
+                    cfg.app_data(recaptcha_settings.clone());
+                }
+            })
             .app_data(client.clone())
             .app_data(mailer.clone())
             .service(handlers::submit)

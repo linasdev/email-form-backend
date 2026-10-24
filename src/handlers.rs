@@ -16,13 +16,13 @@ pub struct FormSubmission {
     #[validate(length(min = 1))]
     pub message: String,
     #[validate(length(min = 1, max = 4096))]
-    pub recaptcha_token: String,
+    pub recaptcha_token: Option<String>,
 }
 
 #[post("/submit")]
 pub async fn submit(
     form_settings: web::Data<FormSettings>,
-    recaptcha_settings: web::Data<RecaptchaSettings>,
+    recaptcha_settings: Option<web::Data<RecaptchaSettings>>,
     client: web::Data<reqwest::Client>,
     mailer: web::Data<Mailer>,
     form: web::Json<FormSubmission>,
@@ -36,7 +36,15 @@ pub async fn submit(
         )));
     }
 
-    recaptcha::verify(&client, &recaptcha_settings, &form.recaptcha_token).await?;
+    if let Some(recaptcha_settings) = &recaptcha_settings {
+        let token = form
+            .recaptcha_token
+            .as_deref()
+            .ok_or_else(|| EmailFormError::Validation("recaptcha_token is required".to_string()))?;
+
+        recaptcha::verify(&client, recaptcha_settings, token).await?;
+    }
+
     mailer.send(&form).await?;
     log::info!("submission delivered");
 
@@ -57,10 +65,10 @@ mod tests {
     fn settings(max_message_length: usize, recaptcha_verify_url: String) -> Settings {
         Settings {
             form: FormSettings { max_message_length },
-            recaptcha: RecaptchaSettings {
+            recaptcha: Some(RecaptchaSettings {
                 verify_url: recaptcha_verify_url,
                 ..RecaptchaSettings::test_default()
-            },
+            }),
             ..Settings::test_default()
         }
     }
@@ -94,7 +102,11 @@ mod tests {
         let app = test::init_service(
             App::new()
                 .app_data(web::Data::new(settings.form))
-                .app_data(web::Data::new(settings.recaptcha))
+                .configure(|cfg| {
+                    if let Some(recaptcha) = settings.recaptcha {
+                        cfg.app_data(web::Data::new(recaptcha));
+                    }
+                })
                 .app_data(web::Data::new(reqwest::Client::new()))
                 .app_data(web::Data::new(mailer))
                 .service(submit),
@@ -322,5 +334,60 @@ mod tests {
 
         assert_that!(status, eq(StatusCode::BAD_GATEWAY));
         assert_that!(body, eq("Bad Gateway"));
+    }
+
+    #[actix_web::test]
+    async fn requires_token_when_recaptcha_is_enabled() {
+        let mut payload = valid_payload();
+        payload.as_object_mut().unwrap().remove("recaptcha_token");
+
+        let (status, body) = post(5000, payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
+        assert_that!(body, eq("recaptcha_token is required"));
+    }
+
+    #[actix_web::test]
+    async fn skips_verification_when_recaptcha_is_disabled() {
+        let stub = AsyncStubTransport::new_ok();
+        let settings = Settings {
+            recaptcha: None,
+            ..settings(5000, "http://127.0.0.1:1/siteverify".to_string())
+        };
+        let mut payload = valid_payload();
+        payload.as_object_mut().unwrap().remove("recaptcha_token");
+
+        let (status, _) = post_to(settings, stub.clone(), payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+        assert_that!(stub.messages().await, len(eq(1)));
+    }
+
+    #[actix_web::test]
+    async fn ignores_token_when_recaptcha_is_disabled() {
+        let settings = Settings {
+            recaptcha: None,
+            ..settings(5000, "http://127.0.0.1:1/siteverify".to_string())
+        };
+        let mut payload = valid_payload();
+        payload["recaptcha_token"] = json!(INVALID_TOKEN);
+
+        let (status, _) = post_to(settings, AsyncStubTransport::new_ok(), payload).await;
+
+        assert_that!(status, eq(StatusCode::OK));
+    }
+
+    #[actix_web::test]
+    async fn still_validates_other_fields_when_recaptcha_is_disabled() {
+        let settings = Settings {
+            recaptcha: None,
+            ..settings(5000, String::new())
+        };
+        let mut payload = valid_payload();
+        payload["email"] = json!("nope");
+
+        let (status, _) = post_to(settings, AsyncStubTransport::new_ok(), payload).await;
+
+        assert_that!(status, eq(StatusCode::BAD_REQUEST));
     }
 }

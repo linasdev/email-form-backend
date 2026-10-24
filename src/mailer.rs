@@ -135,7 +135,7 @@ mod tests {
             name: name.to_string(),
             email: email.to_string(),
             message: "Hello!".to_string(),
-            recaptcha_token: "token".to_string(),
+            recaptcha_token: None,
         }
     }
 
